@@ -115,7 +115,7 @@ public:
                 if (size_ > rhs.size_)
                 {
                     std::copy(rhs.data_.GetAddress(), rhs.data_.GetAddress() + rhs.size_, data_.GetAddress());
-                    std::destroy_n(data_.GetAddress() + rhs.size_, size_ - rhs.size_);
+                    DestroyN(data_.GetAddress() + rhs.size_, size_ - rhs.size_);
                 }
                 else
                 {
