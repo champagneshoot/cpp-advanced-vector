@@ -165,14 +165,14 @@ public:
             return;
         }
         RawMemory<T> new_data(new_capacity);
-
-        if constexpr (std::is_nothrow_move_constructible_v<T> || !std::is_copy_constructible_v<T>)
+        MoveOrCopyElements(data_.GetAddress(), new_data.GetAddress(), size_);
+        /*if constexpr (std::is_nothrow_move_constructible_v<T> || !std::is_copy_constructible_v<T>)
         {
             std::uninitialized_move_n(data_.GetAddress(), size_, new_data.GetAddress());
         }
         else {
             std::uninitialized_copy_n(data_.GetAddress(), size_, new_data.GetAddress());
-        }
+        }*/
         DestroyN(data_.GetAddress(), size_);
         data_.Swap(new_data);
     }
@@ -203,59 +203,21 @@ public:
 
     void PopBack() /* noexcept */
     {
-        if (size_ > 0)
-        {
-            DestroyN(data_.GetAddress() + size_ - 1, 1);
-            --size_;
-        }
+        assert(size_ > 0);
+        DestroyN(data_.GetAddress() + size_ - 1, 1);
+        --size_;
     }
 
     template <typename... Args>
     T& EmplaceBack(Args&&... args)
     {
-        /*
-           Реализация похожа на PushBack, только вместо копирования или перемещения
-           переданного элемента, он конструируется путём передачи параметров метода конструктору T
-        */
-        T* res = nullptr;
-        if (size_ == Capacity())
-        {
-
-            RawMemory<T> new_data(size_ == 0 ? 1 : size_ * 2);
-
-            res = new (new_data + size_) T(std::forward<Args>(args)...);
-
-            if constexpr (std::is_nothrow_move_constructible_v<T> || !std::is_copy_constructible_v<T>) {
-                std::uninitialized_move_n(data_.GetAddress(), size_, new_data.GetAddress());
-            }
-            else
-            {
-                try
-                {
-                    std::uninitialized_copy_n(data_.GetAddress(), size_, new_data.GetAddress());
-
-                }
-                catch (...) {
-                    std::destroy_n(new_data.GetAddress(), size_);
-                    throw;
-                }
-            }
-            std::destroy_n(data_.GetAddress(), size_);
-            data_.Swap(new_data);
-        }
-        else {
-
-            res = new (data_ + size_) T(std::forward<Args>(args)...);
-        }
-        ++size_;
-        return *res;
+        return *Emplace(end(), std::forward<Args>(args)...);
     }
 
     ~Vector()
     {
         DestroyN(data_.GetAddress(), size_);
     }
-
 
     iterator begin() noexcept
     {
@@ -296,55 +258,23 @@ public:
     {
         assert(pos >= begin() && pos <= end());
         int position = pos - begin();
-
         if (data_.Capacity() <= size_)
         {
-
-            RawMemory<T> new_data(size_ == 0 ? 1 : size_ * 2);
-
-            new (new_data.GetAddress() + position) T(std::forward<Args>(args)...);
-
-            if constexpr (std::is_nothrow_move_constructible_v<T> || !std::is_copy_constructible_v<T>) {
-                std::uninitialized_move_n(data_.GetAddress(), position, new_data.GetAddress());
-                std::uninitialized_move_n(data_.GetAddress() + position, size_ - position, new_data.GetAddress() + position + 1);
-
-            }
-            else {
-                std::uninitialized_copy_n(data_.GetAddress(), position, new_data.GetAddress());
-                std::uninitialized_copy_n(data_.GetAddress() + position, size_ - position, new_data.GetAddress() + position + 1);
-            }
-
-            std::destroy_n(data_.GetAddress(), size_);
-            data_.Swap(new_data);
-
+            AllocateAndMoveData(position, std::forward<Args>(args)...);
         }
-        else {
-
+        else 
+        {
             try {
-
-                if (pos != end()) {
-
-                    T new_s(std::forward<Args>(args)...);
-                    new (end()) T(std::forward<T>(data_[size_ - 1]));
-
-                    std::move_backward(begin() + position, end() - 1, end());
-                    *(begin() + position) = std::forward<T>(new_s);
-
-                }
-                else {
-                    new (end()) T(std::forward<Args>(args)...);
-                }
-
+                InsertIntoExistingBuffer(pos, position, std::forward<Args>(args)...);
             }
             catch (...) {
-                operator delete (end());
-                throw;
+                HandleExceptionDuringInsert();
             }
         }
-
         size_++;
         return begin() + position;
     }
+
     iterator Erase(const_iterator pos)
     {
         size_t step = pos - begin();
@@ -370,5 +300,47 @@ private:
 
     static void Destroy(T* buf) noexcept {
         buf->~T();
+    }
+
+    void MoveOrCopyElements(T* data, T* new_data, int position)
+    {
+        if constexpr (std::is_nothrow_move_constructible_v<T> || !std::is_copy_constructible_v<T>){
+            std::uninitialized_move_n(data, position, new_data);
+        }
+        else {
+            std::uninitialized_copy_n(data, position, new_data);
+        }
+    }
+
+    template <typename... Args>
+    void AllocateAndMoveData(int position, Args&&... args)
+    {
+        RawMemory<T> new_data(size_ == 0 ? 1 : size_ * 2);
+        new (new_data.GetAddress() + position) T(std::forward<Args>(args)...);
+        MoveOrCopyElements(data_.GetAddress(), new_data.GetAddress(), position);
+        MoveOrCopyElements(data_.GetAddress() + position, new_data.GetAddress() + position + 1, size_ - position);
+        DestroyN(data_.GetAddress(), size_);
+        data_.Swap(new_data);
+    }
+
+    template <typename... Args>
+    void InsertIntoExistingBuffer(const_iterator pos,int position, Args&&... args)
+    {
+        if (pos != end()) 
+        {
+            T new_s(std::forward<Args>(args)...);
+            new (end()) T(std::forward<T>(data_[size_ - 1]));
+            std::move_backward(begin() + position, end() - 1, end());
+            *(begin() + position) = std::forward<T>(new_s);
+        }
+        else {
+            new (end()) T(std::forward<Args>(args)...);
+        }
+    }
+
+    void HandleExceptionDuringInsert() 
+    {
+        operator delete (end());
+        throw;
     }
 };
